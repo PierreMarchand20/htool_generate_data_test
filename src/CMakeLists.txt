@@ -1,0 +1,6 @@
+add_executable(Generate generate.cpp)
+target_link_libraries(Generate Htool_generate_data_test)
+target_compile_definitions(Generate PRIVATE "-DWITH_HPDDM")
+add_executable(Generate_sym generate_sym.cpp)
+target_link_libraries(Generate_sym Htool_generate_data_test)
+target_compile_definitions(Generate_sym PRIVATE "-DWITH_HPDDM")

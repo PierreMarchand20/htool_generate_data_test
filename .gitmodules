@@ -1,0 +1,9 @@
+[submodule "external/htool"]
+	path = external/htool
+	url = https://github.com/htool-ddm/htool.git
+[submodule "external/hpddm"]
+	path = external/hpddm
+	url = https://github.com/hpddm/hpddm.git
+[submodule "external/BemTool"]
+	path = external/BemTool
+	url = https://github.com/PierreMarchand20/BemTool.git
