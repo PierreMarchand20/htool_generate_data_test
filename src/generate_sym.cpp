@@ -1,11 +1,15 @@
-// #include <bemtool-tests/tools.hpp>
 #include <bemtool/miscellaneous/htool_wrap.hpp>
 #include <bemtool/tools.hpp>
-
-#define STR(x) #x
-#define SHOW_DEFINE(x) printf("%s=%s\n", #x, STR(x))
+#include <htool/clustering/clustering.hpp>
+#include <htool/clustering/tree_builder/direction_computation.hpp>
+#include <htool/clustering/tree_builder/splitting.hpp>
+#include <htool/distributed_operator/distributed_operator.hpp>
+#include <htool/hmatrix/hmatrix_output.hpp>
+#include <htool/solvers/ddm.hpp>
+// #include <bemtool-tests/tools.hpp>
 
 using namespace bemtool;
+using namespace htool;
 
 Cplx f_rhs(R3 x, R3 normal, double kappa) {
     return 100 * (-x[0] - 1.5) * (-x[0] - 1.5 > 0);
@@ -24,24 +28,24 @@ int main(int argc, char *argv[]) {
     // Check the number of parameters
     if (argc < 2) {
         // Tell the user how to run the program
-        std::cerr << "Usage: " << argv[0] << " meshname" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " meshname outputpath" << std::endl;
         /* "Usage messages" are a conventional way of telling the user
          * how to run a program if they enter the command incorrectly.
          */
         return 1;
     }
-    std::string meshname = argv[1];
-    double kappa         = 1;
-    int overlap          = 4;
+    std::string meshname   = argv[1];
+    std::string outputpath = argv[2];
+    double kappa           = 1;
+    int overlap            = 4;
     R3 dir;
     dir[0] = 1. / std::sqrt(2);
     dir[1] = 1. / std::sqrt(2);
     dir[2] = 0;
 
     // HTOOL
-    htool::SetNdofPerElt(1);
-    htool::SetEpsilon(1e-6);
-    htool::SetEta(-0.1);
+    double epsilon = 1e-6;
+    double eta     = 10;
 
     // HPDDM
     HPDDM::Option &opt = *HPDDM::Option::get();
@@ -65,43 +69,31 @@ int main(int argc, char *argv[]) {
         std::cout << "Create dof" << std::endl;
     Dof<P1_1D> dof(mesh);
     int nb_dof = NbDof(dof);
-    std::vector<htool::R3> x(nb_dof);
+    std::vector<double> x(3 * nb_dof);
     for (int i = 0; i < nb_dof; i++) {
-        x[i][0] = dof(((dof.ToElt(i))[0])[0])[((dof.ToElt(i))[0])[1]][0];
-        x[i][1] = dof(((dof.ToElt(i))[0])[0])[((dof.ToElt(i))[0])[1]][1];
-        x[i][2] = dof(((dof.ToElt(i))[0])[0])[((dof.ToElt(i))[0])[1]][2];
+        x[3 * i + 0] = dof(((dof.ToElt(i))[0])[0])[((dof.ToElt(i))[0])[1]][0];
+        x[3 * i + 1] = dof(((dof.ToElt(i))[0])[0])[((dof.ToElt(i))[0])[1]][1];
+        x[3 * i + 2] = dof(((dof.ToElt(i))[0])[0])[((dof.ToElt(i))[0])[1]][2];
     }
-    WritePointValGmsh(dof, "mesh.msh", std::vector<int>(nb_dof, 1));
-
-    // Weights
-    if (rank == 0)
-        std::cout << "Compute weights" << std::endl;
-    std::vector<double> g(nb_dof, 0);
-    for (int i = 0; i < nb_dof; i++) {
-        std::vector<N2> elts = dof.ToElt(i);
-        for (int j = 0; j < elts.size(); j++) {
-            g[i] += Vol((mesh)[j]);
-        }
-    }
-
-    // Generator
-    if (rank == 0)
-        std::cout << "Creating generators" << std::endl;
-    BIO_Generator<YU_HS_2D_P1xP1, P1_1D> generator_W(dof, kappa);
+    WritePointValGmsh(dof, (outputpath + "/mesh.msh").c_str(), std::vector<int>(nb_dof, 1));
 
     // Clustering
     if (rank == 0)
         std::cout << "Creating cluster tree" << std::endl;
-    std::shared_ptr<htool::GeometricClustering> t = std::make_shared<htool::GeometricClustering>();
-    std::vector<int> tab(nb_dof);
-    std::iota(tab.begin(), tab.end(), int(0));
-    t->build(x, std::vector<double>(nb_dof, 0), tab, std::vector<double>(nb_dof, 1));
+    ClusterTreeBuilder<double, ComputeLargestExtent<double>, RegularSplitting<double>> target_recursive_build_strategy(nb_dof, 3, x.data(), 2, sizeWorld);
+    target_recursive_build_strategy.set_minclustersize(1);
+    std::shared_ptr<const Cluster<double>> target_root_cluster = std::make_shared<const Cluster<double>>(target_recursive_build_strategy.create_cluster_tree());
 
-    // HMatrix
+    // Generator
+    if (rank == 0)
+        std::cout << "Creating generators" << std::endl;
+    BIO_Generator<YU_HS_2D_P1xP1, P1_1D> generator_W(target_root_cluster->get_permutation(), target_root_cluster->get_permutation(), dof, kappa);
+
+    // Distributed operator
     if (rank == 0)
         std::cout << "Building Hmatrix" << std::endl;
-    htool::HMatrix<Cplx, htool::partialACA, htool::GeometricClustering, htool::RjasanowSteinbach> W(generator_W, t, x, 'N');
-    W.print_infos();
+    DistributedOperator<Cplx> W(target_root_cluster, target_root_cluster);
+    W.build_default_hierarchical_approximation(generator_W, epsilon, eta);
 
     // Right-hand side
     if (rank == 0)
@@ -109,7 +101,7 @@ int main(int argc, char *argv[]) {
     std::vector<Cplx> rhs(nb_dof, 1);
 
     if (rank == 0) {
-        htool::vector_to_bytes(rhs, "rhs.bin");
+        htool::vector_to_bytes(rhs, outputpath + "/rhs.bin");
     }
 
     // Overlap
@@ -120,16 +112,15 @@ int main(int argc, char *argv[]) {
     std::vector<int> neighbors;
     std::vector<std::vector<int>> intersections;
 
-    Partition(W.get_MasterOffset_t(), W.get_permt(), dof, cluster_to_ovr_subdomain, ovr_subdomain_to_global, neighbors, intersections);
+    Partition(target_recursive_build_strategy.get_partition(), target_root_cluster->get_permutation(), dof, cluster_to_ovr_subdomain, ovr_subdomain_to_global, neighbors, intersections);
 
-    W.get_cluster_tree_t().save_cluster("cluster_" + NbrToStr(sizeWorld));
-
-    htool::vector_to_bytes(cluster_to_ovr_subdomain, "cluster_to_ovr_subdomain_" + NbrToStr(sizeWorld) + "_" + NbrToStr(rank) + ".bin");
-    htool::vector_to_bytes(ovr_subdomain_to_global, "ovr_subdomain_to_global_" + NbrToStr(sizeWorld) + "_" + NbrToStr(rank) + ".bin");
-    htool::vector_to_bytes(neighbors, "neighbors_" + NbrToStr(sizeWorld) + "_" + NbrToStr(rank) + ".bin");
+    save_cluster_tree(*target_root_cluster, outputpath + "/cluster_" + htool::NbrToStr<int>(sizeWorld));
+    htool::vector_to_bytes(cluster_to_ovr_subdomain, outputpath + "/cluster_to_ovr_subdomain_" + htool::NbrToStr(sizeWorld) + "_" + htool::NbrToStr(rank) + ".bin");
+    htool::vector_to_bytes(ovr_subdomain_to_global, outputpath + "/ovr_subdomain_to_global_" + htool::NbrToStr(sizeWorld) + "_" + htool::NbrToStr(rank) + ".bin");
+    htool::vector_to_bytes(neighbors, outputpath + "/neighbors_" + htool::NbrToStr(sizeWorld) + "_" + htool::NbrToStr(rank) + ".bin");
 
     for (int i = 0; i < intersections.size(); i++) {
-        htool::vector_to_bytes(intersections[i], "intersections_" + NbrToStr(sizeWorld) + "_" + NbrToStr(rank) + "_" + NbrToStr(i) + ".bin");
+        htool::vector_to_bytes(intersections[i], outputpath + "/intersections_" + htool::NbrToStr(sizeWorld) + "_" + htool::NbrToStr(rank) + "_" + htool::NbrToStr(i) + ".bin");
     }
 
     // Eigenvalue problems setup
@@ -188,13 +179,13 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    Ki.matrix_to_bytes("Ki_" + NbrToStr(sizeWorld) + "_" + NbrToStr(rank) + ".bin");
+    Ki.matrix_to_bytes(outputpath + "/Ki_" + htool::NbrToStr(sizeWorld) + "_" + htool::NbrToStr(rank) + ".bin");
 
     // Solve
     std::vector<Cplx> sol(nb_dof, 0);
     std::vector<double> sol_abs(nb_dof), sol_real(nb_dof);
     std::string arg;
-    htool::DDM<Cplx, htool::partialACA, htool::GeometricClustering, htool::RjasanowSteinbach> ddm(generator_W, W, ovr_subdomain_to_global, cluster_to_ovr_subdomain, neighbors, intersections);
+    htool::DDM<Cplx> ddm(generator_W, &W, ovr_subdomain_to_global, cluster_to_ovr_subdomain, neighbors, intersections);
 
     // DDM one level ASM
     MPI_Barrier(MPI_COMM_WORLD);
@@ -212,16 +203,17 @@ int main(int argc, char *argv[]) {
     ddm.solve(rhs.data(), sol.data());
     ddm.print_infos();
     ddm.clean();
-    // std::fill_n(sol.data(), sol.size(), 0);
-
     if (rank == 0) {
-        htool::vector_to_bytes(sol, "sol.bin");
+        htool::vector_to_bytes(sol, outputpath + "/sol.bin");
     }
     std::fill_n(sol.data(), sol.size(), 0);
 
     // Matrix
-    htool::SubMatrix<Cplx> A = generator_W.get_submatrix(tab, tab);
-    A.matrix_to_bytes("matrix.bin");
+    std::vector<int> identity(nb_dof);
+    std::iota(identity.begin(), identity.end(), int(0));
+    htool::Matrix<Cplx> to_dense(nb_dof, nb_dof);
+    generator_W.copy_submatrix(nb_dof, nb_dof, identity.data(), identity.data(), to_dense.data());
+    to_dense.matrix_to_bytes(outputpath + "/matrix.bin");
 
     // Finalize the MPI environment.
     MPI_Finalize();

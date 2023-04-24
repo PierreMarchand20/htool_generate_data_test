@@ -38,9 +38,6 @@ if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
 
     message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
-    # # Sanitizers
-    # include(external/htool/cmake/sanitizers.cmake)
-
     # # Formatting
     # include(external/htool/cmake/formatting.cmake)
     # file(
@@ -106,24 +103,15 @@ message("-- MPI include files found in " "${MPI_INCLUDE_PATH}")
 
 # OPENMP
 find_package(OpenMP)
-if(OpenMP_FOUND)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
-    message("-- OpenMP flags are " "${OpenMP_CXX_FLAGS}")
-    message("-- OpenMP linker flags are " "${OpenMP_EXE_LINKER_FLAGS}")
-else()
-    message("-- OpenMP not found")
-endif()
 
 # =============================================================================#
 # =========================== Libraries =======================================#
 # =============================================================================#
 
 add_library(Htool_generate_data_test INTERFACE)
-target_include_directories(Htool_generate_data_test INTERFACE "external/BemTool" ${Boost_INCLUDE_DIRS} "external/htool/include/" ${MPI_INCLUDE_PATH} "external/hpddm/include" ${Elemental_INCLUDE_DIRS})
+target_include_directories(Htool_generate_data_test INTERFACE "external/BemTool" ${Boost_INCLUDE_DIRS} "external/htool/include/" ${MPI_INCLUDE_PATH} "external/hpddm/include")
 
-target_link_libraries(Htool_generate_data_test INTERFACE ${MPI_LIBRARIES} ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES})
+target_link_libraries(Htool_generate_data_test INTERFACE ${MPI_LIBRARIES} ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} OpenMP::OpenMP_CXX)
 
 # =============================================================================#
 # ========================== Repertories ======================================#

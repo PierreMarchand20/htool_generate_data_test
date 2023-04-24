@@ -1,2 +1,3 @@
 build*
 *.msh
+*.DS_store
