@@ -72,6 +72,10 @@ int main(int argc, char *argv[]) {
     }
     WritePointValGmsh(dof, (outputpath + "/mesh.msh").c_str(), std::vector<int>(nb_dof, 1));
 
+    if (rank == 0) {
+        htool::vector_to_bytes(x, outputpath + "/geometry.bin");
+    }
+
     // Clustering
     if (rank == 0)
         std::cout << "Creating cluster tree" << std::endl;
